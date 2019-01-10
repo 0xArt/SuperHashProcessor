@@ -1,0 +1,579 @@
+module super_hash_processor(input logic clk, reset_n, start,
+input logic [1:0] opcode,
+input logic [31:0] message_addr, size, output_addr,
+output logic done, mem_clk, mem_we,
+output logic [15:0] mem_addr,
+output logic [31:0] mem_write_data,
+input logic [31:0] mem_read_data);
+
+
+
+
+enum logic [2:0] {IDLE=3'b000, READ=3'b001, WRITE=3'b010, DONE=3'b011, HASH=3'b100, PAD=3'b101, UU=3'b110, OUTPUT=3'b111} state;
+logic [31:0] rc;
+logic [31:0] wc;
+logic [31:0] blocks;
+logic [31:0] bytes;
+logic [31:0] registers;
+
+logic [31:0] shiftamount;
+logic [31:0] oneshift;
+
+
+logic [31:0] limit;
+logic [511:0] M;
+logic [511:0] operator;
+logic [1:0] trig;
+
+logic [1:0] pad;
+logic [1:0] needsone;
+
+logic [31:0] w[0:15];
+logic [31:0] t;
+
+
+logic [31:0] a, b, c, d, e, f, g, h, k, temp;
+logic [31:0] h0, h1, h2, h3, h4, h5, h6, h7;
+logic [31:0] a1, b1, c1, d1, e1;
+logic [255:0] hashout;
+
+
+
+assign mem_clk = clk;
+
+// SHA256 K constants
+parameter int sha256_k[0:63] = '{
+   32'h428a2f98, 32'h71374491, 32'hb5c0fbcf, 32'he9b5dba5, 32'h3956c25b, 32'h59f111f1, 32'h923f82a4, 32'hab1c5ed5,
+   32'hd807aa98, 32'h12835b01, 32'h243185be, 32'h550c7dc3, 32'h72be5d74, 32'h80deb1fe, 32'h9bdc06a7, 32'hc19bf174,
+   32'he49b69c1, 32'hefbe4786, 32'h0fc19dc6, 32'h240ca1cc, 32'h2de92c6f, 32'h4a7484aa, 32'h5cb0a9dc, 32'h76f988da,
+   32'h983e5152, 32'ha831c66d, 32'hb00327c8, 32'hbf597fc7, 32'hc6e00bf3, 32'hd5a79147, 32'h06ca6351, 32'h14292967,
+   32'h27b70a85, 32'h2e1b2138, 32'h4d2c6dfc, 32'h53380d13, 32'h650a7354, 32'h766a0abb, 32'h81c2c92e, 32'h92722c85,
+   32'ha2bfe8a1, 32'ha81a664b, 32'hc24b8b70, 32'hc76c51a3, 32'hd192e819, 32'hd6990624, 32'hf40e3585, 32'h106aa070,
+   32'h19a4c116, 32'h1e376c08, 32'h2748774c, 32'h34b0bcb5, 32'h391c0cb3, 32'h4ed8aa4a, 32'h5b9cca4f, 32'h682e6ff3,
+   32'h748f82ee, 32'h78a5636f, 32'h84c87814, 32'h8cc70208, 32'h90befffa, 32'ha4506ceb, 32'hbef9a3f7, 32'hc67178f2
+};
+
+// MD5 S constants
+parameter byte S[0:63] = '{
+    8'd7, 8'd12, 8'd17, 8'd22, 8'd7, 8'd12, 8'd17, 8'd22, 8'd7, 8'd12, 8'd17, 8'd22, 8'd7, 8'd12, 8'd17, 8'd22,
+    8'd5, 8'd9,  8'd14, 8'd20, 8'd5, 8'd9,  8'd14, 8'd20, 8'd5, 8'd9,  8'd14, 8'd20, 8'd5, 8'd9,  8'd14, 8'd20,
+    8'd4, 8'd11, 8'd16, 8'd23, 8'd4, 8'd11, 8'd16, 8'd23, 8'd4, 8'd11, 8'd16, 8'd23, 8'd4, 8'd11, 8'd16, 8'd23,
+    8'd6, 8'd10, 8'd15, 8'd21, 8'd6, 8'd10, 8'd15, 8'd21, 8'd6, 8'd10, 8'd15, 8'd21, 8'd6, 8'd10, 8'd15, 8'd21
+};
+
+// MD5 K constants
+parameter int md5_k[0:63] = '{
+    32'hd76aa478, 32'he8c7b756, 32'h242070db, 32'hc1bdceee,
+    32'hf57c0faf, 32'h4787c62a, 32'ha8304613, 32'hfd469501,
+    32'h698098d8, 32'h8b44f7af, 32'hffff5bb1, 32'h895cd7be,
+    32'h6b901122, 32'hfd987193, 32'ha679438e, 32'h49b40821,
+    32'hf61e2562, 32'hc040b340, 32'h265e5a51, 32'he9b6c7aa,
+    32'hd62f105d, 32'h02441453, 32'hd8a1e681, 32'he7d3fbc8,
+    32'h21e1cde6, 32'hc33707d6, 32'hf4d50d87, 32'h455a14ed,
+    32'ha9e3e905, 32'hfcefa3f8, 32'h676f02d9, 32'h8d2a4c8a,
+    32'hfffa3942, 32'h8771f681, 32'h6d9d6122, 32'hfde5380c,
+    32'ha4beea44, 32'h4bdecfa9, 32'hf6bb4b60, 32'hbebfbc70,
+    32'h289b7ec6, 32'heaa127fa, 32'hd4ef3085, 32'h04881d05,
+    32'hd9d4d039, 32'he6db99e5, 32'h1fa27cf8, 32'hc4ac5665,
+    32'hf4292244, 32'h432aff97, 32'hab9423a7, 32'hfc93a039,
+    32'h655b59c3, 32'h8f0ccc92, 32'hffeff47d, 32'h85845dd1,
+    32'h6fa87e4f, 32'hfe2ce6e0, 32'ha3014314, 32'h4e0811a1,
+    32'hf7537e82, 32'hbd3af235, 32'h2ad7d2bb, 32'heb86d391
+};
+
+
+
+
+  // convert from little-endian to big-endian
+  function logic [31:0] changeEndian(input logic [31:0] value);
+    changeEndian = {value[7:0], value[15:8], value[23:16], value[31:24]};
+  endfunction
+  
+function logic [31:0] determine_num_blocks(input logic [31:0] size);
+	determine_num_blocks = ((((size*8)+64)/512)+1);
+endfunction
+
+ function logic [159:0] hash_op(input logic [31:0] a, b, c, d, e, w, input logic [31:0] t);
+ 
+
+		
+	if(t<=19)begin
+		k = 32'h5A827999;
+		f = (b & c) | ( (~b) & d);
+	end else 	
+	
+	if(t <=39)begin
+		k = 32'h6ED9EBA1;
+		f = b ^ c ^ d;
+	end else
+	
+	if(t<=59)begin
+		k = 32'h8F1BBCDC;
+		f = (b & c) | (b & d) | (c & d);
+	end else 
+	
+	begin
+		k = 32'hCA62C1D6;	
+		f = b ^ c ^ d;
+	end
+/*	
+$display("a == %x\n",a);
+$display("b == %x\n",b);
+$display("c == %x\n",c);
+$display("d == %x\n",d);
+$display("e == %x\n",e);
+$display("f == %x\n",f);	
+$display("w == %x\n",w);
+*/	
+temp = {a[26:0],a[31:27]} + f + e + k + w;
+//$display("temp == %x\n",temp);	
+//$display("-------------------------------");	
+e = d;
+d = c;
+c = {b[1:0],b[31:2]};
+b = a;
+a = temp;
+
+	
+
+hash_op = {a, b, c, d, e};
+
+endfunction
+
+
+// MD5 hash round
+function logic[127:0] md5_op(input logic [31:0] a, b, c, d, w,
+                             input logic [7:0] t);
+    logic [31:0] t1, t2; // internal signals
+begin
+//$display("w == %x\n",w);
+//$display("--------------------------\n");
+    t1 = a + md5_f(t) + md5_k[t] + w;
+    t2 = b + ((t1 << S[t])|(t1 >> (32-S[t])));
+    md5_op = {d, t2, b, c};
+end
+endfunction
+
+
+  always_ff @(posedge clk, negedge reset_n)
+  begin
+    if (!reset_n) begin
+      state <= IDLE;
+		trig<=0;
+		
+		if(opcode==2'b01 || opcode==2'b00) begin
+		h0 <= 32'h67452301;
+		h1 <= 32'hEFCDAB89;
+		h2 <= 32'h98BADCFE;
+		h3 <= 32'h10325476;
+		h4 <= 32'hC3D2E1F0;
+		end
+		
+		if(opcode==2'b10) begin
+		h0 <= 32'h6a09e667;
+      h1 <= 32'hbb67ae85;
+      h2 <= 32'h3c6ef372;
+      h3 <= 32'ha54ff53a;
+      h4 <= 32'h510e527f;
+      h5 <= 32'h9b05688c;
+      h6 <= 32'h1f83d9ab;
+      h7 <= 32'h5be0cd19;
+		end
+		
+		M<=0;
+    end else
+      case (state)
+      IDLE: // start
+          if (start) begin // READ first word
+				blocks<=determine_num_blocks(size);
+				bytes<= size;
+				registers<=size/4;				
+				mem_we <= 0;
+            mem_addr <= message_addr;
+            rc <= 1;
+            wc <= 0;
+            state <= READ;
+          end
+      READ: begin // READ
+				if (bytes>=64)begin
+					if(rc==1)begin	
+					limit<=16;
+					end
+					if(rc==limit)begin
+					limit<=(16+rc);
+					end
+					pad<=0;
+				end
+				
+				if (bytes<64 && blocks>1)begin
+					limit<=registers;
+					pad<=1;
+					needsone<=1;
+				end
+
+				if (bytes<64 && blocks==1)begin
+					pad<=1;
+					needsone<=0;
+				end							
+								
+			 M<= (M << 32 | M>>480);
+          mem_we <= 0;
+          mem_addr <= message_addr + rc;
+          rc <= rc + 1;
+          if (rc[0]  && blocks>1)begin // rc is odd
+            state <= WRITE;
+			 end else
+			if (rc[0]  && blocks==1)begin
+				state <=PAD;
+         end else
+            state <= READ;
+        end
+      WRITE: begin // WRITE
+          mem_we <= 1;
+          mem_addr <= output_addr + wc;
+			 if(trig==1)begin
+          M[31:0] <= changeEndian(mem_read_data);
+			 trig<=0;
+			 end
+			 if(trig==0)begin
+			 M[63:32] <= changeEndian(mem_read_data);
+			 trig<=1;
+			 end				 
+          wc <= wc + 1;
+          if ((wc + 1) < (limit+(limit%2))) begin
+            if (wc[0]) // wc is odd
+              state <= READ;
+            else
+              state <= WRITE;
+          end else begin
+			 
+			 if(blocks>2)begin
+       		  bytes<= size - ((rc)*4);
+			 end
+	
+			if(blocks<=2)begin
+					bytes<=bytes-bytes;
+			end		
+				  if(pad==0 && blocks>0)begin
+					state<=UU;
+				  end
+				  
+				  if(pad==1)begin		
+			
+              if(size%2==0)begin
+					operator<=1;	  
+					shiftamount<= (64-bytes)*8;
+					oneshift<= ((64-bytes)*8);
+					state<=PAD;
+					end
+					
+					if(size%2>0)begin
+					operator<=0;	  
+					shiftamount<= 0;
+					oneshift<= 0;
+					state<=PAD;
+					end
+					
+				  end
+
+				  
+          end
+        end
+		  
+		HASH: begin
+		
+		if(opcode==2'b00)begin
+		
+		if(t<64)begin
+		
+		//$display("t == %d\n",t);			
+		
+		
+		
+			if(t<16)begin
+               {a, b, c, d} <= md5_op(a, b, c, d, w[t], t);
+					
+			end	
+			
+	//		if(t>14)begin
+		//	w[15] <= w[md5_g(t)];
+				//for (int i=0; i<15; i++) w[i] <= w[i+1];	
+			//end
+			
+			if(t>15)begin
+               {a, b, c, d} <= md5_op(a, b, c, d, w[md5_g(t)], t);
+					
+			end				
+			t<=t+1;
+		
+		end
+		
+		if (t==64)begin
+			h0<=h0+a;
+			h1<=h1+b;
+			h2<=h2+c;
+			h3<=h3+d;	
+		end	
+		
+		
+		
+		end
+	
+		if(opcode==2'b01)begin
+		
+			if(t<80)begin
+			
+			
+			
+				if(t<16)begin
+				
+						//$display("t == %d\n",t);
+						{a,b,c,d,e} <= hash_op(a, b, c, d, e, w[t], t);
+						t<=t+1;
+						
+						if(t==15)begin
+						end
+				end	
+				
+				if(t>=16)begin
+					  // $display("t == %d\n",t);
+						{a,b,c,d,e} <= hash_op(a, b, c, d, e, ((w[t-a1]^w[t-b1]^w[t-c1]^w[t-d1])<<1 | (w[t-a1]^w[t-b1]^w[t-c1]^w[t-d1])>>31), t);
+						w[t-e1]<= ((w[t-a1]^w[t-b1]^w[t-c1]^w[t-d1])<<1 | (w[t-a1]^w[t-b1]^w[t-c1]^w[t-d1])>>31);
+						t<=t+1;
+						
+						
+						if((((t+1)-3)%16)==0)begin
+						a1 <= a1+16;
+						end
+						
+						if((((t+1)-8)%16)==0)begin
+						b1 <= b1+16;
+						end	
+		
+						if((((t+1)-14)%16)==0)begin
+						c1 <= c1+16;
+						end	
+
+						
+						if(((t+1)%16)==0)begin
+						d1 <= d1+16;
+						e1 <= e1+16;					
+						end						
+				end	
+			   
+				if (t==80)begin
+				h0<=h0+a;
+				h1<=h1+b;
+				h2<=h2+c;
+				h3<=h3+d;
+				h4<=h4+e;
+				
+				/*
+				$display("h0== %x\n",h0);
+				$display("h1 == %x\n",h1);
+				$display("h2 == %x\n",h2);
+				$display("h3 == %x\n",h3);
+				$display("h4 == %x\n",h4);		
+				*/
+				end		
+			
+			end
+			
+			if(opcode==2'b10) begin
+			
+					if(t<64)begin
+      		
+		
+			if(t<16)begin		
+			{a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, h, w[t], t);
+			end
+			
+			if(t>14)begin
+			w[15] <= w[0] + (rightrotate(w[1],   7) ^ rightrotate(w[1],  18) ^ (w[1]  >>  3)) +
+            w[9] + (rightrotate(w[14], 17) ^ rightrotate(w[14], 19) ^ (w[14] >> 10));
+				for (int i=0; i<15; i++) w[i] <= w[i+1];	
+			end	
+	
+
+
+			if(t>15)begin
+			{a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, h, w[15], t);
+	
+			end
+		
+		t <= t + 1;
+
+		
+		end
+		
+		if (t==64)begin
+		
+			h0<=h0+a;
+			h1<=h1+b;
+			h2<=h2+c;
+			h3<=h3+d;
+			h4<=h4+e;
+			h5<=h5+f;
+			h6<=h6+g;
+			h7<=h7+h;
+			
+			end
+		end	
+			
+
+			
+			if(blocks>0)begin
+			M[511:0]<=0;
+			state<=READ;
+			end 
+			
+			
+			if(blocks==0)begin
+			state<=UU;
+			end
+			
+		end
+						
+
+		end
+		
+		
+		PAD: begin
+		
+			if(needsone==1)begin
+			
+			 if(shiftamount>0)begin
+			 M<= (M << 32 | M>>480);
+			 shiftamount<=shiftamount-32;
+			 end
+			 
+			 if(oneshift>32)begin
+			 operator<= (operator << 32 | M>>480);
+			 oneshift<=oneshift-32;
+			 end
+			 
+			 if(oneshift==32)begin
+			 operator<= (operator << 31 | M>>481);
+			 oneshift<=oneshift-32;
+			 end
+			 
+			 if(oneshift==0 && shiftamount==0)begin
+			 M<= M|operator;
+			 state<=UU;
+			 end
+			end
+			
+			
+			if(needsone==0)begin			
+			M[63:0]<= (size << 3);
+			state<=UU;
+			end
+		
+		end
+		
+		
+		UU:begin
+				   a <= h0;
+					b <= h1;
+					c <= h2;
+					d <= h3;
+					e <= h4;		
+					f <= h5;
+					g <= h6;
+					h <= h7;
+		
+			if(blocks>0)begin
+				w[0]<=M[511:480]; 
+				w[1]<=M[479:448];
+				w[2]<=M[447:416]; 
+				w[3]<=M[415:384]; 
+				w[4]<=M[383:352]; 
+				w[5]<=M[351:320]; 
+				w[6]<=M[319:288]; 
+				w[7]<=M[287:256]; 
+				w[8]<=M[255:224]; 
+				w[9]<=M[223:192]; 
+				w[10]<=M[191:160];
+				w[11]<=M[159:128];
+				w[12]<=M[127:96]; 
+				w[13]<=M[95:64];  
+				w[14]<=M[63:32];
+				w[15]<=M[31:0];
+				state<=HASH;
+				t<=0;
+				a1<=3;
+				b1<=8;
+				c1<=14;
+				d1<=16;
+				e1<=16;
+				blocks<=blocks-1;
+			end
+				
+			if(blocks==0)begin
+				state<=OUTPUT;
+				hashout<={h0,h1,h2,h3,h4,h5,h6,h7};
+				wc<=0;
+				
+
+			end
+				
+		end	
+			
+		OUTPUT:begin	
+		
+		if (opcode==2'b01) begin
+				 mem_we<=1;
+				 mem_addr <= output_addr;
+				 mem_write_data<=hashout[159:128];
+				 hashout<= (hashout << 32 | hashout>>128);		
+				 mem_addr <= output_addr + wc;
+				 wc<=wc+1;
+				 
+				 if((wc+1)==5)begin
+				 state<=DONE;
+				 end
+		end
+
+		if (opcode==2'b00) begin
+		    mem_we<=1;
+		    mem_addr <= output_addr;
+			 mem_write_data<=hashout[127:96];
+			 hashout<= (hashout << 32 | hashout>>96);		
+          mem_addr <= output_addr + wc;
+			 wc<=wc+1;
+			 
+			 if((wc+1)==4)begin
+			 state<=DONE;
+			 end
+		end		
+		
+		if (opcode==2'b10) begin
+		    mem_we<=1;
+		    mem_addr <= output_addr;
+			 mem_write_data<=hashout[255:224];
+			 hashout<= (hashout << 32 | hashout>>223);		
+          mem_addr <= output_addr + wc;
+			 wc<=wc+1;
+			 
+			 if((wc+1)==8)begin
+			 state<=DONE;
+			 end	
+		end	 
+		
+		end
+		
+      DONE: begin
+		/*
+			$display("-------- FINAL RESULT --------");		
+			$display("h0== %x\n",h0);
+			$display("h1 == %x\n",h1);
+			$display("h2 == %x\n",h2);
+			$display("h3 == %x\n",h3);
+			$display("h4 == %x\n",h4);
+	   */		
+         done <= 1;
+         state <= IDLE;
+        end
+      endcase
+  end
+endmodule

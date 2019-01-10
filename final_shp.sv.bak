@@ -1,0 +1,9 @@
+module super_hash_processor(input logic clk, reset_n, start,
+input logic [1:0] opcode,
+input logic [31:0] message_addr, size, output_addr,
+output logic done, mem_clk, mem_we,
+output logic [15:0] mem_addr,
+output logic [31:0] mem_write_data,
+input logic [31:0] mem_read_data);
+...
+endmodule

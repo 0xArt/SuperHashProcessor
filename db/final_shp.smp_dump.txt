@@ -1,0 +1,11 @@
+
+State Machine - |super_hash_processor|state
+Name state.OUTPUT state.POST_HASH state.HASH state.PAD state.READ state.IDLE state.SETUP state.DONE 
+state.SETUP 0 0 0 0 0 0 0 0 
+state.IDLE 0 0 0 0 0 1 1 0 
+state.READ 0 0 0 0 1 0 1 0 
+state.PAD 0 0 0 1 0 0 1 0 
+state.HASH 0 0 1 0 0 0 1 0 
+state.POST_HASH 0 1 0 0 0 0 1 0 
+state.OUTPUT 1 0 0 0 0 0 1 0 
+state.DONE 0 0 0 0 0 0 1 1 
